@@ -1,3 +1,4 @@
+# Страница: создание/редактирование подключения (path='/connection-builder')
 import dash
 from dash import html, dcc, Input, Output, State, callback, dash_table
 import dash_bootstrap_components as dbc
@@ -22,9 +23,27 @@ def ensure_bucket(bucket_name):
         s3_client.create_bucket(Bucket=bucket_name)
 
 
-def layout(ws_id=None, **kwargs):
+def layout(ws_id=None, conn_id=None, **kwargs):
     if not ws_id: return dbc.Container([html.H4("Ошибка: ID области потерян", className="mt-5 text-danger"),
                                         dbc.Button("В профиль", href="/workspaces")])
+
+    # Режим редактирования: загружаем сохранённое подключение
+    edit_data, current_file_info = None, None
+    if conn_id:
+        try:
+            with engine.connect() as conn:
+                row = conn.execute(text("SELECT id, name, raw_file_path FROM connections WHERE id = :id"),
+                                   {"id": int(conn_id)}).mappings().first()
+            if row:
+                edit_data = {'id': row['id'], 'name': row['name'], 'path': row['raw_file_path']}
+                current_file_info = dbc.Alert([
+                    html.B("Текущий файл: "), html.Code(row['raw_file_path'].split('/', 1)[1]),
+                    html.Br(),
+                    html.Small("Загрузите новый файл, чтобы заменить его, или просто измените название и сохраните.",
+                               className="text-muted")
+                ], color="light", className="mb-3 border")
+        except Exception as e:
+            print(f"Ошибка загрузки подключения: {e}")
 
     nav = dbc.Nav([
         dbc.NavItem(dbc.NavLink("← К объектам области", href=f"/workspace-view?ws_id={ws_id}")),
@@ -33,17 +52,24 @@ def layout(ws_id=None, **kwargs):
         dbc.NavItem(dbc.NavLink("Конструктор чартов", href=f"/chart-builder?ws_id={ws_id}")),
     ], pills=True, className="mb-4")
 
+    title = "Редактирование подключения" if edit_data else "Новое подключение"
+
     return dbc.Container([
         dcc.Store(id='current-ws-id', data=ws_id),
         dcc.Store(id='raw-file-store'),
+        dcc.Store(id='edit-conn-data', data=edit_data),
         nav,
-        html.H3("Новое подключение", className="mb-4 text-dark"),
+        html.H3(title, className="mb-4 text-dark"),
         dbc.Card([
             dbc.CardBody([
                 dbc.Label("Название подключения:"),
-                dbc.Input(id="connection-name-input", type="text", className="mb-4"),
+                dbc.Input(id="connection-name-input", type="text", className="mb-4",
+                          value=edit_data['name'] if edit_data else None),
+                current_file_info if current_file_info else None,
                 dcc.Upload(
-                    id='upload-raw-data', children=html.Div(['Перетащите файл Excel/CSV сюда']),
+                    id='upload-raw-data',
+                    children=html.Div(['Перетащите файл Excel/CSV сюда' if not edit_data
+                                       else 'Перетащите новый файл Excel/CSV сюда (замена текущего)']),
                     style={'width': '100%', 'height': '80px', 'lineHeight': '80px', 'borderStyle': 'dashed',
                            'borderRadius': '10px', 'textAlign': 'center', 'cursor': 'pointer',
                            'backgroundColor': '#f8f9fa'}, multiple=False
@@ -54,7 +80,7 @@ def layout(ws_id=None, **kwargs):
                 ]),
                 html.Div(id='connection-preview-container', className="mt-4"),
                 dbc.Button("Сохранить", id="btn-save-connection", color="success", className="mt-4 w-100",
-                           style={'display': 'none'}),
+                           style={'display': 'block'} if edit_data else {'display': 'none'}),
                 html.Div(id='upload-raw-status', className="mt-3 fw-bold text-center")
             ])
         ], className="shadow-sm")
@@ -108,12 +134,59 @@ def update_preview(sheets, file_data):
                                                                                                'padding': '8px'})])
 
 
+def _delete_s3(full_path):
+    try:
+        if full_path:
+            bucket, key = full_path.split('/', 1)
+            s3_client.delete_object(Bucket=bucket, Key=key)
+    except Exception:
+        pass
+
+
 @callback(Output('upload-raw-status', 'children'), Output('upload-raw-status', 'className'),
           Input('btn-save-connection', 'n_clicks'), State('connection-name-input', 'value'),
           State('raw-sheet-select', 'value'), State('raw-file-store', 'data'), State('current-ws-id', 'data'),
-          State('auth-state', 'data'), prevent_initial_call=True)
-def save_conn(n_clicks, name, sheets, file_data, ws_id, auth_state):
+          State('auth-state', 'data'), State('edit-conn-data', 'data'), prevent_initial_call=True)
+def save_conn(n_clicks, name, sheets, file_data, ws_id, auth_state, edit_data):
     if not name: return "Укажите название", "text-danger mt-3"
+
+    # ----- Режим редактирования существующего подключения -----
+    if edit_data:
+        try:
+            with engine.connect() as conn:
+                if file_data:
+                    ensure_bucket(RAW_BUCKET)
+                    decoded = base64.b64decode(file_data['bytes'])
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    uname = auth_state.get('username', 'user')
+                    s_filename = file_data['filename'].replace(" ", "_")
+
+                    if file_data['is_excel']:
+                        if not sheets: return "Выберите лист", "text-danger mt-3"
+                        s = sheets[0]
+                        df = pd.ExcelFile(io.BytesIO(decoded)).parse(s)
+                        body = df.to_csv(index=False).encode('utf-8')
+                        key = f"{uname}/{timestamp}_{str(s).replace(' ', '_')}_{s_filename}.csv"
+                    else:
+                        body = decoded
+                        key = f"{uname}/{timestamp}_{s_filename}"
+
+                    s3_client.put_object(Bucket=RAW_BUCKET, Key=key, Body=body)
+                    _delete_s3(edit_data['path'])
+                    # Заменяем файл и обновляем updated_at
+                    conn.execute(text("UPDATE connections SET name = :n, raw_file_path = :p, updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
+                                 {"n": name, "p": f"{RAW_BUCKET}/{key}", "id": edit_data['id']})
+                else:
+                    # Только переименование - обновляем только name и updated_at
+                    conn.execute(text("UPDATE connections SET name = :n, updated_at = CURRENT_TIMESTAMP WHERE id = :id"),
+                                 {"n": name, "id": edit_data['id']})
+                conn.commit()
+            return "Изменения сохранены!", "text-success mt-3"
+        except Exception as e:
+            return f"Ошибка: {e}", "text-danger mt-3"
+
+    # ----- Создание нового подключения -----
+    if not file_data: return "Загрузите файл", "text-danger mt-3"
     ensure_bucket(RAW_BUCKET)
     try:
         decoded = base64.b64decode(file_data['bytes'])
@@ -128,14 +201,16 @@ def save_conn(n_clicks, name, sheets, file_data, ws_id, auth_state):
                     key = f"{uname}/{timestamp}_{str(s).replace(' ', '_')}_{s_filename}.csv"
                     s3_client.put_object(Bucket=RAW_BUCKET, Key=key, Body=csv_bytes)
                     conn.execute(text(
-                        "INSERT INTO connections (user_id, workspace_id, name, raw_file_path) VALUES (:u, :w, :n, :p)"),
+                        "INSERT INTO connections (user_id, workspace_id, name, raw_file_path, created_at, updated_at) "
+                        "VALUES (:u, :w, :n, :p, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"),
                                  {"u": auth_state['user_id'], "w": ws_id, "n": f"{name} ({s})",
                                   "p": f"{RAW_BUCKET}/{key}"})
             else:
                 key = f"{uname}/{timestamp}_{s_filename}"
                 s3_client.put_object(Bucket=RAW_BUCKET, Key=key, Body=decoded)
                 conn.execute(text(
-                    "INSERT INTO connections (user_id, workspace_id, name, raw_file_path) VALUES (:u, :w, :n, :p)"),
+                    "INSERT INTO connections (user_id, workspace_id, name, raw_file_path, created_at, updated_at) "
+                    "VALUES (:u, :w, :n, :p, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"),
                              {"u": auth_state['user_id'], "w": ws_id, "n": name, "p": f"{RAW_BUCKET}/{key}"})
             conn.commit()
         return "Успешно сохранено!", "text-success mt-3"

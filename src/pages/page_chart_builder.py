@@ -1,3 +1,4 @@
+# Страница: конструктор/редактор чартов (path='/chart-builder')
 import dash
 from dash import html, dcc, Input, Output, State, callback
 import dash_bootstrap_components as dbc
@@ -14,9 +15,23 @@ s3_client = boto3.client('s3', endpoint_url="http://localhost:9000", aws_access_
 engine = create_engine(POSTGRES_URI)
 
 
-def layout(ws_id=None, **kwargs):
+def layout(ws_id=None, chart_id=None, **kwargs):
     if not ws_id: return dbc.Container([html.H4("Ошибка: ID области потерян", className="mt-5 text-danger"),
                                         dbc.Button("В профиль", href="/workspaces")])
+
+    # Режим редактирования: загружаем сохранённый чарт
+    edit_prefill = None
+    if chart_id:
+        try:
+            with engine.connect() as conn:
+                row = conn.execute(text(
+                    "SELECT id, dataset_id, name, chart_type, x_axis, y_axis FROM charts WHERE id = :id"),
+                    {"id": int(chart_id)}).mappings().first()
+            if row:
+                edit_prefill = {'chart_id': row['id'], 'dataset_id': row['dataset_id'], 'name': row['name'],
+                                't': row['chart_type'], 'x': row['x_axis'], 'y': row['y_axis']}
+        except Exception as e:
+            print(f"Ошибка загрузки чарта: {e}")
 
     nav = dbc.Nav([
         dbc.NavItem(dbc.NavLink("← К объектам области", href=f"/workspace-view?ws_id={ws_id}")),
@@ -25,11 +40,15 @@ def layout(ws_id=None, **kwargs):
         dbc.NavItem(dbc.NavLink("Конструктор чартов", active=True, href="#")),
     ], pills=True, className="mb-4")
 
+    title = "Редактирование графика" if edit_prefill else "Конструктор графиков"
+
     return dbc.Container([
         dcc.Store(id='current-ws-id', data=ws_id),
         dcc.Store(id='current-dataset-config'),
+        dcc.Store(id='edit-chart-id', data=edit_prefill['chart_id'] if edit_prefill else None),
+        dcc.Store(id='edit-chart-prefill', data=edit_prefill),
         nav,
-        html.H3("Конструктор графиков", className="mb-4 text-dark"),
+        html.H3(title, className="mb-4 text-dark"),
         dbc.Row([
             dbc.Col([
                 dbc.Card([
@@ -50,7 +69,9 @@ def layout(ws_id=None, **kwargs):
                         dcc.Dropdown(id='chart-y-select', className="mb-4"),
 
                         html.Hr(),
-                        dbc.Label("Имя графика:"), dbc.Input(id="chart-name-input", type="text", className="mb-2"),
+                        dbc.Label("Имя графика:"),
+                        dbc.Input(id="chart-name-input", type="text", className="mb-2",
+                                  value=edit_prefill['name'] if edit_prefill else None),
                         dbc.Button("Сохранить", id="btn-save-chart", color="primary", className="w-100"),
                         html.Div(id='chart-save-status', className="mt-2 text-center")
                     ])
@@ -59,7 +80,7 @@ def layout(ws_id=None, **kwargs):
             dbc.Col([dbc.Card(dbc.CardBody(dcc.Graph(id='main-chart-canvas', style={'height': '70vh'})),
                               className="shadow-sm")], width=9)
         ])
-    ], fluid=True, className="mt-4 px-4")
+    ], className="mt-4")
 
 
 # Динамическое изменение подписей параметров в левой панели в зависимости от типа графика
@@ -74,14 +95,23 @@ def update_axis_labels(chart_type):
     return "Ось X:", "Ось Y:"
 
 
-@callback(Output('chart-dataset-select', 'options'), Input('current-ws-id', 'data'))
-def load_ds(ws_id):
-    if not ws_id: return []
+@callback(Output('chart-dataset-select', 'options'), Output('chart-dataset-select', 'value'),
+          Input('current-ws-id', 'data'), State('edit-chart-prefill', 'data'))
+def load_ds(ws_id, edit_prefill):
+    if not ws_id: return [], dash.no_update
     with engine.connect() as conn:
         res = conn.execute(text(
             "SELECT d.id, d.name, d.columns_config, d.file_path FROM datasets d JOIN connections c ON d.connection_id = c.id WHERE c.workspace_id = :ws"),
             {"ws": ws_id}).mappings().all()
-        return [{'label': r['name'], 'value': json.dumps(dict(r))} for r in res]
+        options = [{'label': r['name'], 'value': json.dumps(dict(r))} for r in res]
+
+    value = dash.no_update
+    if edit_prefill:
+        for o in options:
+            if json.loads(o['value'])['id'] == edit_prefill['dataset_id']:
+                value = o['value']
+                break
+    return options, value
 
 
 @callback(
@@ -97,7 +127,6 @@ def update_axes(ds_json):
 
     x_opts = [{'label': c['field'], 'value': c['field']} for c in c_config]
 
-    # В список параметров для оси Y/метрики попадают числовые колонки ИЛИ любые колонки с настроенной агрегацией (кроме "Нет")
     y_opts = []
     for c in c_config:
         is_numeric = c['type'] in ['Число', 'Дробное число', 'Целое число']
@@ -106,6 +135,22 @@ def update_axes(ds_json):
             y_opts.append({'label': c['field'], 'value': c['field']})
 
     return x_opts, y_opts, ds_data
+
+
+# Восстановление настроек сохранённого чарта (срабатывает один раз после загрузки датасета)
+@callback(
+    Output('chart-type-select', 'value'),
+    Output('chart-x-select', 'value'),
+    Output('chart-y-select', 'value'),
+    Output('edit-chart-prefill', 'data'),
+    Input('current-dataset-config', 'data'),
+    State('edit-chart-prefill', 'data'),
+    prevent_initial_call=True
+)
+def apply_edit_prefill(ds_data, edit_prefill):
+    if not ds_data or not edit_prefill:
+        return dash.no_update, dash.no_update, dash.no_update, dash.no_update
+    return edit_prefill['t'], edit_prefill['x'], edit_prefill['y'], None
 
 
 @callback(Output('main-chart-canvas', 'figure'), Input('current-dataset-config', 'data'),
@@ -117,7 +162,6 @@ def draw(ds_data, t, x, y):
         bucket, key = ds_data['file_path'].split('/', 1)
         df = pd.read_parquet(io.BytesIO(s3_client.get_object(Bucket=bucket, Key=key)['Body'].read()))
 
-        # Поиск выбранной агрегации для переданного Y-поля
         agg_label = 'Сумма'
         agg_func = 'sum'
         for c in ds_data['columns_config']:
@@ -133,16 +177,14 @@ def draw(ds_data, t, x, y):
                 }.get(agg_label, 'sum')
                 break
 
-        # Группируем и агрегируем данные
         df_g = df.groupby(x, as_index=False)[y].agg(agg_func)
 
-        # Сортируем данные по алфавиту/возрастанию по категориальному признаку X
+        # Сортировка по алфавиту
         df_g = df_g.sort_values(by=x, ascending=True)
 
         if len(df_g) > 50 and t in ['bar', 'line']:
             df_g = df_g.head(50)
 
-        # Рисуем графики без переименования подписей осей (подписи остаются оригинальными названиями колонок)
         if t == 'bar':
             fig = px.bar(df_g, x=x, y=y)
         elif t == 'line':
@@ -151,7 +193,6 @@ def draw(ds_data, t, x, y):
             fig = px.scatter(df_g, x=x, y=y)
         elif t == 'pie':
             fig = px.pie(df_g, names=x, values=y)
-            # На круговой диаграмме не отображаем текст. Вся информация выведена на всплывающую плашку.
             fig.update_traces(
                 textinfo='none',
                 hovertemplate="<b>%{label}</b><br>Значение: %{value}<br>Доля: %{percent}<extra></extra>"
@@ -166,15 +207,28 @@ def draw(ds_data, t, x, y):
 @callback(Output('chart-save-status', 'children'), Output('chart-save-status', 'className'),
           Input('btn-save-chart', 'n_clicks'), State('chart-name-input', 'value'), State('chart-type-select', 'value'),
           State('chart-x-select', 'value'), State('chart-y-select', 'value'), State('current-dataset-config', 'data'),
+          State('edit-chart-id', 'data'),
           prevent_initial_call=True)
-def save(nc, n, t, x, y, ds):
+def save(nc, n, t, x, y, ds, edit_chart_id):
     if not n: return "Укажите имя", "text-danger mt-2"
+    if not ds or not x or not y: return "Выберите датасет и оси", "text-danger mt-2"
     try:
         with engine.connect() as conn:
-            conn.execute(
-                text("INSERT INTO charts (dataset_id, name, chart_type, x_axis, y_axis) VALUES (:d, :n, :t, :x, :y)"),
-                {"d": ds['id'], "n": n, "t": t, "x": x, "y": y})
-            conn.commit()
-        return "Успешно сохранено!", "text-success mt-2"
+            if edit_chart_id:
+                # Обновление чарта - устанавливаем updated_at = CURRENT_TIMESTAMP
+                conn.execute(text(
+                    "UPDATE charts SET dataset_id = :d, name = :n, chart_type = :t, x_axis = :x, y_axis = :y, updated_at = CURRENT_TIMESTAMP "
+                    "WHERE id = :id"),
+                    {"d": ds['id'], "n": n, "t": t, "x": x, "y": y, "id": edit_chart_id})
+                conn.commit()
+                return "Изменения сохранены!", "text-success mt-2"
+            else:
+                # Новая запись: инициализируем created_at и updated_at
+                conn.execute(
+                    text("INSERT INTO charts (dataset_id, name, chart_type, x_axis, y_axis, created_at, updated_at) "
+                         "VALUES (:d, :n, :t, :x, :y, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"),
+                    {"d": ds['id'], "n": n, "t": t, "x": x, "y": y})
+                conn.commit()
+                return "Успешно сохранено!", "text-success mt-2"
     except Exception as e:
         return f"Ошибка БД: {e}", "text-danger mt-2"
