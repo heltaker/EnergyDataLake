@@ -13,25 +13,32 @@ engine = create_engine(POSTGRES_URI)
 s3_client = boto3.client('s3', endpoint_url="http://localhost:9000",
                          aws_access_key_id="minio_admin", aws_secret_access_key="minio_password")
 
-try:
-    with engine.connect() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS workspaces (
-                id SERIAL PRIMARY KEY,
-                user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
-                name VARCHAR(255) NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        """))
-        conn.commit()
-except Exception as e:
-    print(f"Ошибка инициализации таблицы областей: {e}")
+
+def run_migrations():
+    """Безопасно добавляет колонку updated_at во все таблицы, если её там ещё нет."""
+    tables = ['workspaces', 'connections', 'datasets', 'charts']
+    try:
+        with engine.begin() as conn:
+            for table in tables:
+                res = conn.execute(text(f"""
+                    SELECT column_name 
+                    FROM information_schema.columns 
+                    WHERE table_name = :t AND column_name = 'updated_at'
+                """), {"t": table}).fetchone()
+
+                if not res:
+                    print(f"Авто-миграция: Добавление колонки updated_at в таблицу {table}")
+                    conn.execute(text(f"ALTER TABLE {table} ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP"))
+    except Exception as e:
+        print(f"Ошибка миграции базы данных: {e}")
+
+
+# Запускаем миграции структуры БД при импорте страницы
+run_migrations()
 
 
 # ---------- Каскадное удаление (БД + файлы в MinIO) ----------
 def _s3_delete(full_path):
-    """Удаляет файл в MinIO по пути вида 'bucket/key'. Ошибки игнорируются."""
     try:
         if full_path:
             bucket, key = full_path.split('/', 1)
@@ -68,25 +75,32 @@ layout = dbc.Container([
     dcc.Store(id='ws-list-refresh', data=0),
     dcc.Store(id='pending-delete-ws'),
 
+    # Заголовок
     dbc.Row([
-        dbc.Col(html.H2("Коллекции и воркбуки", className="mb-4 fw-bold text-dark"), width=8)
-    ], className="mt-4"),
+        dbc.Col([
+            html.H2("Коллекции и Рабочие пространства", className="mb-1 fw-extrabold text-dark"),
+            html.P("Создавайте и управляйте изолированными исследовательскими областями для анализа энергетики",
+                   className="text-muted small")
+        ], width=12)
+    ], className="mt-4 mb-4 border-bottom pb-3"),
 
+    # Создание новой области
     dbc.Card([
         dbc.CardBody([
             dbc.Row([
-                dbc.Col(dbc.Input(id="new-workspace-name", placeholder="Введите название новой рабочей области...",
-                                  type="text"), width=9),
-                dbc.Col(dbc.Button("Создать область", id="btn-create-workspace", color="primary", className="w-100"),
+                dbc.Col(dbc.Input(id="new-workspace-name", placeholder="Название нового рабочего пространства...",
+                                  type="text", className="form-control border shadow-none"), width=9),
+                dbc.Col(dbc.Button("Добавить область", id="btn-create-workspace", color="primary",
+                                   className="w-100 fw-bold shadow-sm"),
                         width=3)
             ]),
-            html.Div(id="create-ws-status", className="mt-2 text-danger fw-bold")
+            html.Div(id="create-ws-status", className="mt-2 text-danger fw-bold small")
         ])
-    ], className="mb-4 shadow-sm"),
+    ], className="mb-4 border-0 shadow-sm rounded-3"),
 
-    # Оптимизированный поиск с debounce
-    dbc.Input(id="search-workspaces", placeholder="Искать рабочие области по названию (нажмите Enter для поиска)...",
-              className="mb-4 shadow-sm", type="text", debounce=True),
+    # Быстрый автоматический поиск по мере ввода текста
+    dbc.Input(id="search-workspaces", placeholder="Быстрый поиск рабочих областей...",
+              className="mb-4 shadow-sm border", type="text", debounce=False),
 
     html.Div(id='workspaces-grid', className="mt-4"),
 
@@ -95,8 +109,8 @@ layout = dbc.Container([
         dbc.ModalHeader(dbc.ModalTitle("Удаление рабочей области")),
         dbc.ModalBody(id="del-ws-modal-body"),
         dbc.ModalFooter([
-            dbc.Button("Отмена", id="btn-cancel-del-ws", color="secondary", outline=True),
-            dbc.Button("Удалить", id="btn-confirm-del-ws", color="danger")
+            dbc.Button("Отмена", id="btn-cancel-del-ws", color="secondary", outline=True, className="px-3 fw-bold"),
+            dbc.Button("Удалить навсегда", id="btn-confirm-del-ws", color="danger", className="px-3 fw-bold")
         ])
     ], id="del-ws-modal", is_open=False, centered=True)
 ], fluid=True, className="px-4")
@@ -123,19 +137,17 @@ def render_workspaces(auth_state, n_clicks, search_text, refresh, new_name):
     triggered = ctx.triggered[0]['prop_id'] if ctx.triggered else ""
 
     try:
-        with engine.connect() as conn:
-            if 'btn-create-workspace' in triggered:
-                if new_name:
-                    # При создании явно задаем и created_at, и updated_at
-                    conn.execute(text(
-                        "INSERT INTO workspaces (user_id, name, created_at, updated_at) VALUES (:u, :n, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"),
+        if 'btn-create-workspace' in triggered:
+            if new_name:
+                with engine.begin() as conn:
+                    conn.execute(text("INSERT INTO workspaces (user_id, name, created_at, updated_at) "
+                                      "VALUES (:u, :n, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"),
                                  {"u": user_id, "n": new_name})
-                    conn.commit()
-                    clear_input = ""
-                else:
-                    status_msg = "Укажите название рабочей области"
+                clear_input = ""
+            else:
+                status_msg = "Пожалуйста, введите название рабочей области"
 
-            # Запрашиваем из базы как created_at, так и updated_at
+        with engine.connect() as conn:
             df = pd.read_sql(
                 text(
                     "SELECT id, name, created_at, updated_at FROM workspaces WHERE user_id = :uid ORDER BY created_at DESC"),
@@ -152,29 +164,35 @@ def render_workspaces(auth_state, n_clicks, search_text, refresh, new_name):
             table_rows = []
             for _, row in df.iterrows():
                 link_url = f"/workspace-view?ws_id={row['id']}"
-                created_val = pd.to_datetime(row['created_at']).strftime('%d.%m.%Y %H:%M')
-                # Безопасно парсим updated_at, если он заполнен
-                updated_val = pd.to_datetime(row['updated_at']).strftime('%d.%m.%Y %H:%M') if pd.notna(
+                created_dt = pd.to_datetime(row['created_at']).strftime('%d.%m.%Y %H:%M')
+                updated_dt = pd.to_datetime(row['updated_at']).strftime('%d.%m.%Y %H:%M') if pd.notna(
                     row['updated_at']) else "—"
-
                 table_rows.append(html.Tr([
-                    html.Td(html.A(row['name'], href=link_url,
-                                   style={'textDecoration': 'none', 'display': 'block', 'fontWeight': 'bold'})),
-                    html.Td(html.A(created_val, href=link_url,
+                    html.Td(html.A([
+                        # Векторная SVG иконка папки (в одну сплошную строку без переносов во избежание SyntaxError)
+                        html.Span([
+                            html.Img(
+                                src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMCIgaGVpZ2h0PSIyMCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiNmZmMxMDciIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMjIgMTlhMiAyIDAgMCAxLTIgMkg0YTIgMiAwIDAgMS0yLTJWNWEyIDIgMyAwIDEgMi0yaDVsMiAzaDlhMiAyIDAgMCAxIDIgMnY5eiI+PC9wYXRoPjwvc3ZnPg==",
+                                style={'marginRight': '8px', 'width': '20px', 'height': '20px'})
+                        ], className="d-inline-flex align-items-center"),
+                        html.Span(row['name'], className="fw-bold text-dark fs-6 hover-underline")
+                    ], href=link_url, style={'textDecoration': 'none', 'display': 'flex', 'alignItems': 'center'})),
+                    html.Td(html.A(created_dt, href=link_url,
                                    style={'textDecoration': 'none', 'display': 'block', 'color': '#6c757d'})),
-                    html.Td(html.A(updated_val, href=link_url,
+                    html.Td(html.A(updated_dt, href=link_url,
                                    style={'textDecoration': 'none', 'display': 'block', 'color': '#6c757d'})),
-                    html.Td(dbc.Button("Удалить", color="danger", size="sm", outline=True,
+                    html.Td(dbc.Button("Удалить область", color="danger", size="sm", outline=True, className="fw-bold",
                                        id={'type': 'btn-del-ws', 'id': int(row['id']), 'name': str(row['name'])}),
-                            style={'width': '120px', 'textAlign': 'right'})
+                            style={'width': '150px', 'textAlign': 'right'})
                 ]))
 
-            # Добавлена колонка "Дата изменения" в заголовок таблицы
             table = dbc.Table([
-                html.Thead(
-                    html.Tr([html.Th("Название"), html.Th("Дата создания"), html.Th("Дата изменения"), html.Th("")])),
+                html.Thead(html.Tr(
+                    [html.Th("Название пространства"), html.Th("Дата создания"), html.Th("Дата изменения"),
+                     html.Th("")])),
                 html.Tbody(table_rows)
-            ], hover=True, bordered=False, className="bg-white shadow-sm")
+            ], hover=True, striped=False, bordered=False,
+                className="bg-white shadow-sm rounded-3 overflow-hidden border")
 
             return table, status_msg, clear_input
 
@@ -195,9 +213,10 @@ def open_delete_modal(n_clicks):
         return dash.no_update, dash.no_update, dash.no_update
     trig = ctx.triggered_id
     body = html.Div([
-        html.P([f"Удалить рабочую область ", html.B(trig['name']), "?"], className="mb-2"),
-        html.P("Будут удалены все её подключения, датасеты, чарты и связанные файлы в хранилище. "
-               "Действие необратимо.", className="text-muted small mb-0")
+        html.P([f"Удалить рабочую область ", html.B(trig['name']), "?"], className="fs-5 mb-3"),
+        dbc.Alert(
+            "Все содержащиеся в ней подключения, датасеты, чарты и связанные файлы в MinIO будут безвозвратно удалены. Это действие отменить нельзя.",
+            color="danger", className="mb-0 d-flex align-items-center small")
     ])
     return True, body, trig['id']
 
@@ -217,9 +236,8 @@ def confirm_delete(n_confirm, n_cancel, ws_id, refresh):
         return False, dash.no_update
     if ctx.triggered_id == 'btn-confirm-del-ws' and ws_id:
         try:
-            with engine.connect() as conn:
+            with engine.begin() as conn:
                 delete_workspace_cascade(conn, int(ws_id))
-                conn.commit()
         except Exception as e:
             print(f"Ошибка удаления области: {e}")
         return False, (refresh or 0) + 1

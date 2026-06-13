@@ -16,14 +16,36 @@ s3_client = boto3.client('s3', endpoint_url="http://localhost:9000",
 OBJ_LABELS = {'conn': 'подключение', 'ds': 'датасет', 'chart': 'чарт'}
 
 
+# Генерация премиальных векторных SVG-иконок для вкладки "Все объекты" (Base64) - Каждая иконка записана в ОДНУ строчку
+def get_vector_icon(item_type):
+    if item_type == 'conn':
+        return html.Span([
+            html.Img(
+                src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiMwZDZlZmQiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48cGF0aCBkPSJNMTQgMTVhNSA1IDAgMCAwLTcuNTQtLjU0bC0zIDNhNSA1IDAgMCAwIDcuMDcgNy4wN2wxLjcxLTEuNzEiPjwvcGF0aD48cGF0aCBkPSJNMTAgMTNhNSA1IDAgMCAwIDcuNTQuNTRsMy0zYTUgNSAwIDAgMC03LjA3LTcuMDdsLTEuNzIgMS43MSI+PC9wYXRoPjwvc3ZnPg==",
+                style={'width': '24px', 'height': '24px', 'marginRight': '12px'})
+        ], className="d-inline-flex align-items-center")
+    elif item_type == 'ds':
+        return html.Span([
+            html.Img(
+                src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiMxOWI4NjMiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48ZWxsaXBzZSBjeD0iMTIiIGN5PSI1IiByeD0iOSIgcnk9IjMiPjwvZWxsaXBzZT48cGF0aCBkPSJNMyA1djE0YTkgMyAwIDAgMCAxOCAwVjUiPjwvcGF0aD48cGF0aCBkPSJNMyAxMmE5IDMgMCAwIDAgMTggMCI+PC9wYXRoPjwvc3ZnPg==",
+                style={'width': '24px', 'height': '24px', 'marginRight': '12px'})
+        ], className="d-inline-flex align-items-center")
+    else:
+        return html.Span([
+            html.Img(
+                src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyNCIgaGVpZ2h0PSIyNCIgdmlld0JveD0iMCAwIDI0IDI0IiBmaWxsPSJub25lIiBzdHJva2U9IiMwZGNhZjAiIHN0cm9rZS13aWR0aD0iMiIgc3Ryb2tlLWxpbmVjYXA9InJvdW5kIiBzdHJva2UtbGluZWpvaW49InJvdW5kIj48bGluZSB4MT0iMTgiIHkxPSIyMCIgeDI9IjE4IiB5Mj0iMTAiPjwvbGluZT48bGluZSB4MT0iMTIiIHkxPSIyMCIgeDI9IjEyIiB5Mj0iNCI+PC9saW5lPjxsaW5lIHgxPSI2IiB5MT0iMjAiIHgyPSI2IiB5Mj0iMTQiPjwvbGluZT48L3N2Zz4=",
+                style={'width': '24px', 'height': '24px', 'marginRight': '12px'})
+        ], className="d-inline-flex align-items-center")
+
+
 # ---------- Каскадное удаление (БД + файлы в MinIO) ----------
 def _s3_delete(full_path):
     try:
         if full_path:
             bucket, key = full_path.split('/', 1)
             s3_client.delete_object(Bucket=bucket, Key=key)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Ошибка удаления S3 файла: {e}")
 
 
 def delete_chart_db(conn, chart_id):
@@ -34,7 +56,8 @@ def delete_dataset_cascade(conn, ds_id):
     fp = conn.execute(text("SELECT file_path FROM datasets WHERE id = :id"), {"id": ds_id}).scalar()
     conn.execute(text("DELETE FROM charts WHERE dataset_id = :id"), {"id": ds_id})
     conn.execute(text("DELETE FROM datasets WHERE id = :id"), {"id": ds_id})
-    _s3_delete(fp)
+    if fp:
+        _s3_delete(fp)
 
 
 def delete_connection_cascade(conn, conn_id):
@@ -43,7 +66,8 @@ def delete_connection_cascade(conn, conn_id):
     for d in ds_ids:
         delete_dataset_cascade(conn, d)
     conn.execute(text("DELETE FROM connections WHERE id = :id"), {"id": conn_id})
-    _s3_delete(raw)
+    if raw:
+        _s3_delete(raw)
 
 
 def layout(ws_id=None, **kwargs):
@@ -54,43 +78,133 @@ def layout(ws_id=None, **kwargs):
     return html.Div([
         dcc.Store(id='current-ws-id', data=ws_id),
         dcc.Store(id='ws-objects-refresh', data=0),
-        dcc.Store(id='ws-active-tab', data='tab-all'),
         dcc.Store(id='pending-delete-obj'),
+
         dbc.Container([
-            dbc.Button("Вернуться в профиль (ко всем областям)", href="/workspaces", color="link",
-                       className="mb-3 px-0"),
-            html.H2(id="ws-title", className="mb-4 fw-bold text-dark"),
+            # Хлебные крошки
+            dbc.Button("← Вернуться к списку областей", href="/workspaces", color="link",
+                       className="mb-3 px-0 text-decoration-none fw-bold text-primary"),
 
-            # Оптимизированный поиск с debounce
-            dbc.Input(id="search-objects", placeholder="Искать объекты по названию (нажмите Enter для поиска)...",
-                      className="mb-4 shadow-sm", type="text", debounce=True),
+            # Заголовок рабочей области
+            dbc.Row([
+                dbc.Col([
+                    html.H2(id="ws-title", className="fw-extrabold text-dark mb-1"),
+                    html.P("Управляйте подключениями, настраивайте аналитические датасеты и визуализируйте графики",
+                           className="text-muted small")
+                ], width=7),
+                dbc.Col([
+                    dbc.ButtonGroup([
+                        dbc.Button("Подключение", color="primary", href=f"/connection-builder?ws_id={ws_id}",
+                                   className="fw-bold px-3 shadow-sm"),
+                        dbc.Button("Датасет", color="success", href=f"/dataset-builder?ws_id={ws_id}",
+                                   className="fw-bold px-3 shadow-sm"),
+                        dbc.Button("График", color="info", href=f"/chart-builder?ws_id={ws_id}",
+                                   className="text-white fw-bold px-3 shadow-sm"),
+                    ])
+                ], width=5, className="d-flex align-items-center justify-content-end")
+            ], className="mb-4 align-items-center border-bottom pb-3"),
 
-            html.Div(id='ws-content'),
+            # Макет Проводника данных
+            dbc.Row([
+                # Левая колонка: Умная панель фильтрации
+                dbc.Col([
+                    dbc.Card([
+                        dbc.CardHeader("Фильтрация объектов", className="fw-bold text-dark bg-light border-0"),
+                        dbc.CardBody([
+                            # Мгновенный поиск (без debounce=True)
+                            dbc.Label("Поиск по названию:", className="text-secondary small fw-bold uppercase mb-2"),
+                            dbc.Input(id="search-objects", placeholder="Введите название для поиска...",
+                                      className="mb-3 shadow-none border", type="text", debounce=False),
 
-            # Модальное окно подтверждения удаления объекта
+                            # Фильтр по типам
+                            dbc.Label("Тип объекта:", className="text-secondary small fw-bold uppercase mb-2"),
+                            dcc.Checklist(
+                                id='filter-types',
+                                options=[
+                                    {'label': html.Span(' Подключения', className='ms-2 text-dark'), 'value': 'conn'},
+                                    {'label': html.Span(' Датасеты', className='ms-2 text-dark'), 'value': 'ds'},
+                                    {'label': html.Span(' Графики', className='ms-2 text-dark'), 'value': 'chart'}
+                                ],
+                                value=['conn', 'ds', 'chart'],
+                                labelStyle={'display': 'block', 'marginBottom': '8px', 'cursor': 'pointer'},
+                                className="mb-4"
+                            ),
+
+                            # Всплывающий календарь диапазона дат создания
+                            dbc.Label("Временной интервал создания:",
+                                      className="text-secondary small fw-bold uppercase mb-2"),
+                            html.Div([
+                                dcc.DatePickerRange(
+                                    id='filter-create-date-range',
+                                    start_date_placeholder_text="От",
+                                    end_date_placeholder_text="До",
+                                    clearable=True,
+                                    number_of_months_shown=1,
+                                    display_format='DD.MM.YYYY',
+                                    className="mb-3 w-100"
+                                )
+                            ], className="w-100 mb-3"),
+
+                            # Всплывающий календарь диапазона дат изменения
+                            dbc.Label("Временной интервал изменения:",
+                                      className="text-secondary small fw-bold uppercase mb-2"),
+                            html.Div([
+                                dcc.DatePickerRange(
+                                    id='filter-update-date-range',
+                                    start_date_placeholder_text="От",
+                                    end_date_placeholder_text="До",
+                                    clearable=True,
+                                    number_of_months_shown=1,
+                                    display_format='DD.MM.YYYY',
+                                    className="mb-3 w-100"
+                                )
+                            ], className="w-100"),
+
+                            html.Hr(),
+                            dbc.Button("Сбросить фильтры", id="btn-reset-filters", color="secondary", outline=True,
+                                       size="sm", className="w-100 fw-bold")
+                        ])
+                    ], className="border-0 shadow-sm rounded-3 mb-4")
+                ], width=3),
+
+                # Правая колонка: Интерактивный проводник объектов
+                dbc.Col([
+                    html.Div(id='ws-content-explorer', className="g-3")
+                ], width=9)
+            ]),
+
+            # Модальное окно удаления
             dbc.Modal([
-                dbc.ModalHeader(dbc.ModalTitle("Удаление объекта")),
+                dbc.ModalHeader(dbc.ModalTitle("Подтверждение удаления"), close_button=True),
                 dbc.ModalBody(id="del-obj-modal-body"),
                 dbc.ModalFooter([
-                    dbc.Button("Отмена", id="btn-cancel-del-obj", color="secondary", outline=True),
-                    dbc.Button("Удалить", id="btn-confirm-del-obj", color="danger")
+                    dbc.Button("Отмена", id="btn-cancel-del-obj", color="secondary", outline=True,
+                               className="px-3 fw-bold"),
+                    dbc.Button("Подтвердить удаление", id="btn-confirm-del-obj", color="danger",
+                               className="px-3 fw-bold")
                 ])
             ], id="del-obj-modal", is_open=False, centered=True)
-        ], className="mt-4")
+        ], className="mt-2")
     ])
 
 
 @callback(
-    Output('ws-title', 'children'), Output('ws-content', 'children'),
-    Input('current-ws-id', 'data'), Input('auth-state', 'data'),
+    Output('ws-title', 'children'),
+    Output('ws-content-explorer', 'children'),
+    Input('current-ws-id', 'data'),
+    Input('auth-state', 'data'),
     Input('search-objects', 'value'),
-    Input('ws-objects-refresh', 'data'),
-    State('ws-active-tab', 'data')
+    Input('filter-types', 'value'),
+    Input('filter-create-date-range', 'start_date'),
+    Input('filter-create-date-range', 'end_date'),
+    Input('filter-update-date-range', 'start_date'),
+    Input('filter-update-date-range', 'end_date'),
+    Input('ws-objects-refresh', 'data')
 )
-def load_workspace_objects(ws_id, auth_state, search_text, refresh, active_tab):
+def load_and_filter_explorer(ws_id, auth_state, search_text, selected_types,
+                             start_create, end_create, start_update, end_update, refresh):
     if not auth_state or not auth_state.get('logged_in'):
-        return "Загрузка...", html.Div("Синхронизация сессии, пожалуйста, подождите...",
-                                       className="text-muted text-center py-4")
+        return "Загрузка...", html.Div("Синхронизация сессии...", className="text-muted text-center py-5")
 
     try:
         ws_id_int = int(ws_id)
@@ -99,7 +213,6 @@ def load_workspace_objects(ws_id, auth_state, search_text, refresh, active_tab):
         with engine.connect() as conn:
             ws_name = conn.execute(text("SELECT name FROM workspaces WHERE id = :id"), {"id": ws_id_int}).scalar()
 
-            # Добавлен занос поля updated_at во все три SQL-запроса
             conns = conn.execute(text(
                 "SELECT id, name, created_at, updated_at FROM connections WHERE workspace_id = :ws"),
                 {"ws": ws_id_int}).mappings().all()
@@ -116,114 +229,142 @@ def load_workspace_objects(ws_id, auth_state, search_text, refresh, active_tab):
         chart_types_ru = {'bar': 'Столбчатая диаграмма', 'line': 'Линейная диаграмма',
                           'scatter': 'Точечная диаграмма', 'pie': 'Круговая диаграмма'}
 
-        # Унифицированное представление объектов-"файлов" с поддержкой updated_at
-        def make_item(row, obj, href, extra=None):
-            return {'id': row['id'], 'name': row['name'], 'obj': obj, 'href': href,
-                    'created': pd.to_datetime(row['created_at']),
-                    'updated': pd.to_datetime(row['updated_at']) if pd.notna(row['updated_at']) else None,
-                    'extra': extra}
+        items_all = []
+        for r in conns:
+            items_all.append({
+                'id': r['id'], 'name': r['name'], 'type': 'conn', 'type_label': 'Подключение',
+                'created': pd.to_datetime(r['created_at']),
+                'updated': pd.to_datetime(r['updated_at']) if pd.notna(r['updated_at']) else pd.to_datetime(
+                    r['created_at']),
+                'type_key': 'conn', 'color': 'primary', 'href': f"/connection-builder?ws_id={ws_id}&conn_id={r['id']}"
+            })
+        for r in datasets:
+            items_all.append({
+                'id': r['id'], 'name': r['name'], 'type': 'ds', 'type_label': 'Датасет',
+                'created': pd.to_datetime(r['created_at']),
+                'updated': pd.to_datetime(r['updated_at']) if pd.notna(r['updated_at']) else pd.to_datetime(
+                    r['created_at']),
+                'type_key': 'ds', 'color': 'success', 'href': f"/dataset-builder?ws_id={ws_id}&ds_id={r['id']}"
+            })
+        for r in charts:
+            items_all.append({
+                'id': r['id'], 'name': r['name'], 'type': 'chart',
+                'type_label': f"График ({chart_types_ru.get(r['chart_type'], r['chart_type'])})",
+                'created': pd.to_datetime(r['created_at']),
+                'updated': pd.to_datetime(r['updated_at']) if pd.notna(r['updated_at']) else pd.to_datetime(
+                    r['created_at']),
+                'type_key': 'chart', 'color': 'info', 'href': f"/chart-builder?ws_id={ws_id}&chart_id={r['id']}"
+            })
 
-        items_conn = [make_item(r, 'conn', f"/connection-builder?ws_id={ws_id}&conn_id={r['id']}")
-                      for r in conns]
-        items_ds = [make_item(r, 'ds', f"/dataset-builder?ws_id={ws_id}&ds_id={r['id']}")
-                    for r in datasets]
-        items_chart = [make_item(r, 'chart', f"/chart-builder?ws_id={ws_id}&chart_id={r['id']}",
-                                 extra=chart_types_ru.get(r['chart_type'], r['chart_type']))
-                       for r in charts]
+        # Фильтрация в памяти
+        filtered_items = items_all
 
+        # 1. Поиск по названию
         if search_query:
-            items_conn = [i for i in items_conn if search_query in str(i['name']).lower()]
-            items_ds = [i for i in items_ds if search_query in str(i['name']).lower()]
-            items_chart = [i for i in items_chart if search_query in str(i['name']).lower()]
+            filtered_items = [i for i in filtered_items if search_query in i['name'].lower()]
 
-        items_all = sorted(items_conn + items_ds + items_chart, key=lambda i: i['created'], reverse=True)
+        # 2. Фильтр по типам
+        if selected_types:
+            filtered_items = [i for i in filtered_items if i['type'] in selected_types]
+        else:
+            filtered_items = []
 
-        category_ru = {'conn': 'Подключение', 'ds': 'Датасет', 'chart': 'Чарт'}
+        # 3. Фильтр по диапазону дат создания (безопасное приведение через pd.notna)
+        if start_create:
+            s_dt = pd.to_datetime(start_create).date()
+            filtered_items = [i for i in filtered_items if pd.notna(i['created']) and i['created'].date() >= s_dt]
+        if end_create:
+            e_dt = pd.to_datetime(end_create).date()
+            filtered_items = [i for i in filtered_items if pd.notna(i['created']) and i['created'].date() <= e_dt]
 
-        # Сборка таблиц с новыми колонками дат изменения
-        def build_table(items, tab_type):
-            if not items:
-                return html.Div("Нет объектов", className="text-muted text-center py-4 fs-5")
+        # 4. Фильтр по диапазону дат изменения (безопасное приведение через pd.notna)
+        if start_update:
+            su_dt = pd.to_datetime(start_update).date()
+            filtered_items = [i for i in filtered_items if pd.notna(i['updated']) and i['updated'].date() >= su_dt]
+        if end_update:
+            eu_dt = pd.to_datetime(end_update).date()
+            filtered_items = [i for i in filtered_items if pd.notna(i['updated']) and i['updated'].date() <= eu_dt]
 
-            # Везде добавляем Th("Дата изменения")
-            if tab_type == 'all':
-                headers = [html.Th("Название"), html.Th("Тип объекта"), html.Th("Дата создания"),
-                           html.Th("Дата изменения"), html.Th("")]
-            elif tab_type == 'charts':
-                headers = [html.Th("Название"), html.Th("Тип графика"), html.Th("Дата создания"),
-                           html.Th("Дата изменения"), html.Th("")]
-            else:
-                headers = [html.Th("Название"), html.Th("Дата создания"), html.Th("Дата изменения"), html.Th("")]
+        # Сортировка по изменению (новые первыми)
+        filtered_items = sorted(filtered_items,
+                                key=lambda x: x['updated'] if pd.notna(x['updated']) else pd.Timestamp.min,
+                                reverse=True)
 
-            link_style = {'textDecoration': 'none', 'display': 'block'}
-            table_rows = []
-            for it in items:
-                created_str = it['created'].strftime('%d.%m.%Y %H:%M') if pd.notna(it['created']) else "—"
-                updated_str = it['updated'].strftime('%d.%m.%Y %H:%M') if it['updated'] and pd.notna(
-                    it['updated']) else "—"
-
-                name_cell = html.Td(html.A(it['name'], href=it['href'],
-                                           style={**link_style, 'fontWeight': 'bold'}))
-                actions = html.Td(dbc.ButtonGroup([
-                    dbc.Button("Открыть", color="primary", size="sm", outline=True, href=it['href']),
-                    dbc.Button("Удалить", color="danger", size="sm", outline=True,
-                               id={'type': 'btn-del-obj', 'obj': it['obj'], 'id': int(it['id']),
-                                   'name': str(it['name'])})
-                ]), style={'width': '180px', 'textAlign': 'right'})
-
-                if tab_type == 'all':
-                    tds = [name_cell,
-                           html.Td(category_ru[it['obj']] if it['obj'] != 'chart' or not it['extra']
-                                   else category_ru['chart'], className="text-secondary"),
-                           html.Td(created_str, className="text-muted"),
-                           html.Td(updated_str, className="text-muted"),
-                           actions]
-                elif tab_type == 'charts':
-                    tds = [name_cell,
-                           html.Td(it['extra'], className="text-secondary"),
-                           html.Td(created_str, className="text-muted"),
-                           html.Td(updated_str, className="text-muted"),
-                           actions]
-                else:
-                    tds = [name_cell,
-                           html.Td(created_str, className="text-muted"),
-                           html.Td(updated_str, className="text-muted"),
-                           actions]
-                table_rows.append(html.Tr(tds))
-
-            return dbc.Table([html.Thead(html.Tr(headers)), html.Tbody(table_rows)], hover=True, striped=True,
-                             bordered=False, className="bg-white shadow-sm mt-3")
-
-        tabs = dbc.Tabs([
-            dbc.Tab(label="Все объекты", tab_id="tab-all",
-                    children=[html.Br(), build_table(items_all, 'all')]),
-            dbc.Tab(label="Подключения", tab_id="tab-conn", children=[
-                html.Br(), dbc.Button("Создать подключение", color="primary", size="sm",
-                                      href=f"/connection-builder?ws_id={ws_id}"), build_table(items_conn, 'conn')
-            ]),
-            dbc.Tab(label="Датасеты", tab_id="tab-ds", children=[
-                html.Br(),
-                dbc.Button("Создать датасет", color="success", size="sm", href=f"/dataset-builder?ws_id={ws_id}"),
-                build_table(items_ds, 'ds')
-            ]),
-            dbc.Tab(label="Чарты", tab_id="tab-charts", children=[
-                html.Br(), dbc.Button("Создать чарт", color="info", size="sm", className="text-white",
-                                      href=f"/chart-builder?ws_id={ws_id}"), build_table(items_chart, 'charts')
+        if not filtered_items:
+            explorer_view = html.Div([
+                html.H5("Нет объектов, соответствующих критериям фильтрации", className="text-muted text-center my-5")
             ])
-        ], id="ws-tabs", active_tab=active_tab or "tab-all", className="mt-3")
+        else:
+            cards = []
+            for item in filtered_items:
+                cards.append(
+                    dbc.Col(
+                        dbc.Card([
+                            dbc.CardBody([
+                                dbc.Row([
+                                    # Профессиональные SVG иконки без смайликов
+                                    dbc.Col([
+                                        get_vector_icon(item['type_key'])
+                                    ], width="auto", className="d-flex align-items-center"),
 
-        return f"Рабочая область: {ws_name}", tabs
+                                    dbc.Col([
+                                        html.Div([
+                                            dbc.Badge(item['type_label'], color=item['color'],
+                                                      className="mb-2 text-white px-2 py-1"),
+                                        ]),
+                                        html.A(item['name'], href=item['href'],
+                                               className="fw-bold text-dark fs-5 text-decoration-none hover-underline d-block mb-2"),
+                                        html.Div([
+                                            html.Span([html.I(className="bi bi-calendar-plus me-1"),
+                                                       f"Создан: {item['created'].strftime('%d.%m.%Y %H:%M') if pd.notna(item['created']) else '—'}"],
+                                                      className="text-muted small me-3"),
+                                            html.Span([html.I(className="bi bi-pencil-square me-1"),
+                                                       f"Изменен: {item['updated'].strftime('%d.%m.%Y %H:%M') if pd.notna(item['updated']) else '—'}"],
+                                                      className="text-muted small")
+                                        ], className="d-flex flex-wrap")
+                                    ], className="ps-0"),
+
+                                    dbc.Col([
+                                        dbc.ButtonGroup([
+                                            dbc.Button("Открыть", color="light", size="sm", href=item['href'],
+                                                       className="border fw-bold"),
+                                            dbc.Button("Удалить", color="danger", outline=True, size="sm",
+                                                       id={'type': 'btn-del-obj', 'obj': item['type'],
+                                                           'id': int(item['id']), 'name': str(item['name'])})
+                                        ], className="shadow-none")
+                                    ], width="auto", className="d-flex align-items-center justify-content-end")
+                                ])
+                            ])
+                        ], className="border-0 shadow-sm rounded-3 mb-3 hover-shadow transition-all",
+                            style={'backgroundColor': '#ffffff'})
+                        , width=12)
+                )
+            explorer_view = dbc.Row(cards)
+
+        return f"Рабочая область: {ws_name}", explorer_view
+
     except Exception as e:
         return "Ошибка", html.Div(f"Критическая ошибка загрузки компонентов: {e}", className="text-danger")
 
 
-# Запоминаем активную вкладку, чтобы она не сбрасывалась после удаления
-@callback(Output('ws-active-tab', 'data'), Input('ws-tabs', 'active_tab'), prevent_initial_call=True)
-def remember_tab(active_tab):
-    return active_tab
+# Кнопка сброса фильтров
+@callback(
+    Output('search-objects', 'value'),
+    Output('filter-types', 'value'),
+    Output('filter-create-date-range', 'start_date'),
+    Output('filter-create-date-range', 'end_date'),
+    Output('filter-update-date-range', 'start_date'),
+    Output('filter-update-date-range', 'end_date'),
+    Input('btn-reset-filters', 'n_clicks'),
+    prevent_initial_call=True
+)
+def reset_filters(n_clicks):
+    if n_clicks:
+        return "", ['conn', 'ds', 'chart'], None, None, None, None
+    return dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update, dash.no_update
 
 
-# Открытие модального окна подтверждения удаления объекта
+# Открытие модального окна удаления
 @callback(
     Output('del-obj-modal', 'is_open'),
     Output('del-obj-modal-body', 'children'),
@@ -236,18 +377,20 @@ def open_delete_obj_modal(n_clicks):
         return dash.no_update, dash.no_update, dash.no_update
     trig = ctx.triggered_id
     warn = {
-        'conn': "Вместе с подключением будут удалены его датасеты, чарты и файлы в хранилище.",
-        'ds': "Вместе с датасетом будут удалены построенные на нём чарты и файл в хранилище.",
-        'chart': "Чарт будет удалён без возможности восстановления."
+        'conn': "Вместе с подключением будут каскадно удалены все связанные датасеты, графики и файлы в объектном хранилище MinIO.",
+        'ds': "Вместе с датасетом будут каскадно удалены все построенные на нём графики и файлы обработанных датасетов в MinIO.",
+        'chart': "График будет безвозвратно удалён из базы данных."
     }[trig['obj']]
+
     body = html.Div([
-        html.P([f"Удалить {OBJ_LABELS[trig['obj']]} ", html.B(trig['name']), "?"], className="mb-2"),
-        html.P(warn, className="text-muted small mb-0")
+        html.P([f"Вы действительно хотите удалить {OBJ_LABELS[trig['obj']]} ", html.B(trig['name']), "?"],
+               className="fs-5 mb-3"),
+        dbc.Alert(warn, color="warning", className="mb-0 d-flex align-items-center small")
     ])
     return True, body, {'obj': trig['obj'], 'id': trig['id']}
 
 
-# Подтверждение / отмена удаления объекта
+# Подтверждение / отмена удаления
 @callback(
     Output('del-obj-modal', 'is_open', allow_duplicate=True),
     Output('ws-objects-refresh', 'data'),
@@ -262,14 +405,13 @@ def confirm_delete_obj(n_confirm, n_cancel, pending, refresh):
         return False, dash.no_update
     if ctx.triggered_id == 'btn-confirm-del-obj' and pending:
         try:
-            with engine.connect() as conn:
+            with engine.begin() as conn:
                 if pending['obj'] == 'chart':
                     delete_chart_db(conn, int(pending['id']))
                 elif pending['obj'] == 'ds':
                     delete_dataset_cascade(conn, int(pending['id']))
                 elif pending['obj'] == 'conn':
                     delete_connection_cascade(conn, int(pending['id']))
-                conn.commit()
         except Exception as e:
             print(f"Ошибка удаления объекта: {e}")
         return False, (refresh or 0) + 1

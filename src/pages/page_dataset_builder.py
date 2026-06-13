@@ -48,7 +48,7 @@ def layout(ws_id=None, ds_id=None, **kwargs):
             print(f"Ошибка загрузки датасета: {e}")
 
     nav = dbc.Nav([
-        dbc.NavItem(dbc.NavLink("← К объектам области", href=f"/workspace-view?ws_id={ws_id}")),
+        dbc.NavItem(dbc.NavLink("К объектам области", href=f"/workspace-view?ws_id={ws_id}")),
         dbc.NavItem(dbc.NavLink("Загрузка файла", href=f"/connection-builder?ws_id={ws_id}")),
         dbc.NavItem(dbc.NavLink("Создание датасета", active=True, href="#")),
         dbc.NavItem(dbc.NavLink("Конструктор чартов", href=f"/chart-builder?ws_id={ws_id}")),
@@ -62,28 +62,60 @@ def layout(ws_id=None, ds_id=None, **kwargs):
         dcc.Store(id='edit-ds-id', data=edit_data['id'] if edit_data else None),
         dcc.Store(id='edit-ds-prefill', data=edit_data),
         nav,
-        html.H3(title, className="mb-4 text-dark"),
+
+        # Заголовок страницы
+        dbc.Row([
+            dbc.Col([
+                html.H3(title, className="fw-extrabold text-dark mb-1"),
+                html.P("Настройте схему полей и примените агрегации к сырым данным", className="text-muted small mb-0")
+            ], width=12)
+        ], className="mb-4 bg-white p-3 rounded-3 shadow-sm border"),
+
+        # Метаданные: название датасета вынесено вверх и его высота стандартизирована
+        # Кнопка сохранения расположена гармонично ниже названия и подключения
         dbc.Card([
             dbc.CardBody([
-                dbc.Label("Выберите сырое подключение:"),
-                dcc.Dropdown(id='connection-select', placeholder="Загрузка списка...")
-            ])
-        ], className="mb-4 shadow-sm"),
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Label("Название датасета:", className="fw-bold text-secondary small uppercase mb-2"),
+                        dbc.Input(id="dataset-name-input", type="text", placeholder="Введите название датасета...",
+                                  className="mb-3 border shadow-none",  # Обычный стандартный класс высоты
+                                  value=edit_data['name'] if edit_data else None),
+                    ], width=7),
+                    dbc.Col([
+                        dbc.Label("Выберите сырое подключение:",
+                                  className="fw-bold text-secondary small uppercase mb-2"),
+                        dcc.Dropdown(id='connection-select', placeholder="Выберите источник данных...",
+                                     className="shadow-none mb-3")
+                    ], width=5)
+                ]),
 
+                # Кнопка сохранения расположена прямо под метаданными
+                dbc.Row([
+                    dbc.Col([
+                        dbc.Button(
+                            "Сохранить и обработать",
+                            id="btn-save-dataset", color="success", className="px-4 py-2 shadow-sm fw-bold w-100 mb-2"
+                        )
+                    ], width=12)
+                ])
+            ], className="bg-light border-0")
+        ], className="mb-4 shadow-sm border-0 rounded-3"),
+
+        html.Div(id='dataset-save-status', className="mt-2 mb-3 fw-bold text-center"),
+
+        # Схема полей
         dbc.Card(id='schema-panel', style={'display': 'none', 'overflow': 'visible'}, children=[
-            dbc.CardHeader("Настройка полей", className="fw-bold text-success"),
+            dbc.CardHeader("Настройка полей и типов агрегаций", className="fw-bold text-dark bg-white border-bottom"),
             dbc.CardBody([
                 dash_table.DataTable(
                     id='schema-table', editable=True,
                     columns=[
                         {'id': 'field', 'name': 'Поле (Колонка)', 'editable': False},
-                        # Поле "Тип данных" теперь статично и недоступно для изменения пользователем (нет presentation='dropdown')
                         {'id': 'type', 'name': 'Тип данных', 'editable': False},
-                        # Поле "Агрегация" редактируемо и имеет выпадающий список
                         {'id': 'agg', 'name': 'Агрегация', 'presentation': 'dropdown', 'editable': True}
                     ],
                     data=[],
-                    # Все возможные варианты агрегаций для инициализации
                     dropdown={
                         'agg': {
                             'options': [{'label': i, 'value': i} for i in [
@@ -97,27 +129,28 @@ def layout(ws_id=None, ds_id=None, **kwargs):
                             ]]
                         }
                     },
-                    # Ограничение вариантов агрегации в зависимости от типа данных строки
                     dropdown_conditional=[
                         {
                             'if': {
                                 'column_id': 'agg',
                                 'filter_query': '{type} eq "Строка" || {type} eq "Дата" || {type} eq "Дата и время" || {type} eq "Логический"'
                             },
-                            'options': [{'label': i, 'value': i} for i in ['Нет', 'Количество', 'Количество уникальных']]
+                            'options': [{'label': i, 'value': i} for i in
+                                        ['Нет', 'Количество', 'Количество уникальных']]
                         },
                         {
                             'if': {
                                 'column_id': 'agg',
                                 'filter_query': '{type} eq "Целое число" || {type} eq "Дробное число"'
                             },
-                            'options': [{'label': i, 'value': i} for i in ['Количество', 'Среднее', 'Максимальное', 'Минимальное', 'Сумма']]
+                            'options': [{'label': i, 'value': i} for i in
+                                        ['Количество', 'Среднее', 'Максимальное', 'Минимальное', 'Сумма']]
                         }
                     ],
-                    # Стили предотвращения обрезки всплывающего списка (Drop-down Overflow Fix)
                     style_table={'overflowX': 'visible', 'overflowY': 'visible', 'minWidth': '100%'},
-                    style_cell={'textAlign': 'left', 'padding': '10px', 'overflow': 'visible'},
+                    style_cell={'textAlign': 'left', 'padding': '12px', 'overflow': 'visible', 'fontFamily': 'inherit'},
                     style_data={'overflow': 'visible'},
+                    style_header={'backgroundColor': '#f8f9fa', 'fontWeight': 'bold', 'color': '#495057'},
                     css=[
                         {"selector": ".dash-spreadsheet", "rule": "overflow: visible !important;"},
                         {"selector": ".dash-table-container", "rule": "overflow: visible !important;"},
@@ -125,18 +158,13 @@ def layout(ws_id=None, ds_id=None, **kwargs):
                         {"selector": "td.dash-cell", "rule": "overflow: visible !important;"},
                         {"selector": ".dash-cell div", "rule": "overflow: visible !important;"},
                         {"selector": ".dash-dropdown", "rule": "overflow: visible !important;"},
-                        {"selector": ".Select-menu-outer", "rule": "display: block !important; border: 1px solid #ccc !important; background-color: white !important; z-index: 9999 !important; position: absolute !important;"},
+                        {"selector": ".Select-menu-outer",
+                         "rule": "display: block !important; border: 1px solid #ccc !important; background-color: white !important; z-index: 9999 !important; position: absolute !important;"},
                         {"selector": ".Select", "rule": "overflow: visible !important;"}
                     ],
                 ),
-                html.Hr(),
-                dbc.Label("Название датасета:"),
-                dbc.Input(id="dataset-name-input", type="text", className="mb-3",
-                          value=edit_data['name'] if edit_data else None),
-                dbc.Button("Сохранить и обработать", id="btn-save-dataset", color="success", className="w-100"),
-                html.Div(id='dataset-save-status', className="mt-3 fw-bold text-center")
             ], style={'overflow': 'visible'})
-        ], className="shadow-sm")
+        ], className="shadow-sm border-0 rounded-3")
     ], className="mt-4")
 
 
@@ -201,8 +229,8 @@ def load_schema(conn_json, edit_data):
           State('temp-file-info', 'data'), State('auth-state', 'data'), State('edit-ds-id', 'data'),
           prevent_initial_call=True)
 def save_ds(nc, name, schema, finfo, auth, edit_ds_id):
-    if not name: return "Укажите имя", "text-danger"
-    if not finfo: return "Выберите подключение", "text-danger"
+    if not name: return "Укажите название датасета!", "text-danger"
+    if not finfo: return "Сначала выберите сырое подключение!", "text-danger"
     ensure_bucket(PROCESSED_BUCKET)
     try:
         df = pd.read_csv(io.BytesIO(base64.b64decode(finfo['bytes'])))
@@ -219,37 +247,30 @@ def save_ds(nc, name, schema, finfo, auth, edit_ds_id):
         s3_client.put_object(Bucket=PROCESSED_BUCKET, Key=key, Body=buf.getvalue())
         new_fp = f"{PROCESSED_BUCKET}/{key}"
 
-        with engine.connect() as conn:
+        with engine.begin() as conn:
             if edit_ds_id:
-                # Изменяем существующий датасет — обновляем file_path, config, и updated_at
                 old_fp = conn.execute(text("SELECT file_path FROM datasets WHERE id = :id"),
                                       {"id": edit_ds_id}).scalar()
                 conn.execute(text(
                     "UPDATE datasets SET connection_id = :c, name = :n, columns_config = :conf, file_path = :fp, updated_at = CURRENT_TIMESTAMP "
                     "WHERE id = :id"),
-                             {"c": finfo['conn_id'], "n": name,
-                              "conf": json.dumps(schema, ensure_ascii=False), "fp": new_fp, "id": edit_ds_id})
-                # Также обновляем время изменения у подключения
-                conn.execute(text("UPDATE connections SET processed_file_path = :fp, updated_at = CURRENT_TIMESTAMP WHERE id = :c"),
+                    {"c": finfo['conn_id'], "n": name,
+                     "conf": json.dumps(schema, ensure_ascii=False), "fp": new_fp, "id": edit_ds_id})
+                conn.execute(text(
+                    "UPDATE connections SET processed_file_path = :fp, updated_at = CURRENT_TIMESTAMP WHERE id = :c"),
                              {"fp": new_fp, "c": finfo['conn_id']})
-                conn.commit()
                 if old_fp and old_fp != new_fp:
-                    try:
-                        ob, ok = old_fp.split('/', 1)
-                        s3_client.delete_object(Bucket=ob, Key=ok)
-                    except Exception:
-                        pass
-                return "Датасет обновлён!", "text-success"
+                    _s3_delete(old_fp)
+                return "Датасет успешно сохранен и обновлён!", "text-success"
             else:
-                # Создаем новую запись датасета с заполнением created_at и updated_at
                 conn.execute(text(
                     "INSERT INTO datasets (connection_id, name, columns_config, file_path, created_at, updated_at) "
                     "VALUES (:c, :n, :conf, :fp, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"),
-                             {"c": finfo['conn_id'], "n": name, "conf": json.dumps(schema, ensure_ascii=False),
-                              "fp": new_fp})
-                conn.execute(text("UPDATE connections SET processed_file_path = :fp, updated_at = CURRENT_TIMESTAMP WHERE id = :c"),
+                    {"c": finfo['conn_id'], "n": name, "conf": json.dumps(schema, ensure_ascii=False),
+                     "fp": new_fp})
+                conn.execute(text(
+                    "UPDATE connections SET processed_file_path = :fp, updated_at = CURRENT_TIMESTAMP WHERE id = :c"),
                              {"fp": new_fp, "c": finfo['conn_id']})
-                conn.commit()
-                return "Датасет сохранен!", "text-success"
+                return "Новый датасет успешно создан и обработан!", "text-success"
     except Exception as e:
-        return f"Ошибка: {e}", "text-danger"
+        return f"Системная ошибка: {e}", "text-danger"
